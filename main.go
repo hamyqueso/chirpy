@@ -5,7 +5,8 @@ import "net/http"
 func main() {
 	mux := http.NewServeMux()
 
-	server := http.Server{
+	mux.Handle("/", http.FileServer(http.Dir(".")))
+	server := &http.Server{
 		Handler: mux,
 		Addr:    ":8080",
 	}
