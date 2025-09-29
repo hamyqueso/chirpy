@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -38,59 +40,96 @@ func (cfg *apiConfig) handleReset(w http.ResponseWriter, req *http.Request) {
 	cfg.fileserverHits.Store(0)
 }
 
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+
+	result := struct {
+		Error string `json:"error,omitempty"`
+	}{
+		Error: msg,
+	}
+
+	dat, err := json.Marshal(result)
+	if err != nil {
+		log.Println("error Marshalling error message")
+		return
+	}
+
+	w.Write(dat)
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+
+	dat, err := json.Marshal(payload)
+	if err != nil {
+		log.Println("error Marshalling error message")
+		return
+	}
+
+	w.Write(dat)
+}
+
+func badWordReplacer(s string) string {
+	result := []string{}
+	wordList := strings.Split(s, " ")
+	badWords := []string{"kerfuffle", "sharbert", "fornax"}
+
+	for _, word := range wordList {
+		if slices.Contains(badWords, strings.ToLower(word)) {
+			result = append(result, "****")
+		} else {
+			result = append(result, word)
+		}
+	}
+
+	return strings.Join(result, " ")
+}
+
 func handleValidateChirp(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
 		Body string `json:"body"`
 	}
 
-	type result struct {
+	type valid struct {
 		//	the key will be the name of struct field unless you give it an explicit JSON tag
-		Valid bool   `json:"valid,omitempty"`
-		Error string `json:"error,omitempty"`
+		CleanedBody string `json:"cleaned_body,omitempty"`
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 
-	res := result{}
+	result := valid{}
 
 	decoder := json.NewDecoder(req.Body)
-	decoder.DisallowUnknownFields()
+	// decoder.DisallowUnknownFields()
 
 	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		w.WriteHeader(400)
-		res := result{
-			Error: "error decoding request json",
-		}
-		dat, err := json.Marshal(res)
-		if err != nil {
-			log.Println("error Marshalling error message")
-			return
-		}
+		respondWithError(w, 400, "error decoding request json")
 
-		w.Write(dat)
+		// w.WriteHeader(400)
+		// result := result{
+		// 	Error: 		}
+		// dat, err := json.Marshal(result)
+		// if err != nil {
+		// 	log.Println("error Marshalling error message")
+		// 	return
+		// }
+		//
+		// w.Write(dat)
 		return
 	}
-
-	var statusCode int
 
 	if len(params.Body) <= 140 {
-		statusCode = 200
-		res.Valid = true
+		result.CleanedBody = badWordReplacer(params.Body)
+		respondWithJSON(w, 200, result)
 	} else {
-		statusCode = 400
-		res.Error = "Chirp is too long"
-	}
-
-	dat, err := json.Marshal(res)
-	if err != nil {
-		log.Println("Error marshalling result")
+		respondWithError(w, 400, "Chirp is too long")
 		return
 	}
-
-	w.WriteHeader(statusCode)
-	w.Write(dat)
 }
 
 func main() {
