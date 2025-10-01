@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 	"workspace/chirpy/internal/database"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -19,6 +22,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -43,8 +47,19 @@ func (cfg *apiConfig) handleMetrics(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) handleReset(w http.ResponseWriter, req *http.Request) {
-	w.WriteHeader(http.StatusOK)
+	if cfg.platform != "dev" {
+		respondWithError(w, 403, "Forbidden: only allowed in dev environment")
+		return
+	}
+
+	err := cfg.db.ResetUsers(context.Background())
+	if err != nil {
+		respondWithError(w, 400, "error resetting users")
+		return
+	}
 	cfg.fileserverHits.Store(0)
+
+	respondWithJSON(w, 200, nil)
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -66,7 +81,7 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 	w.Write(dat)
 }
 
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+func respondWithJSON(w http.ResponseWriter, code int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 
@@ -95,6 +110,44 @@ func badWordReplacer(s string) string {
 	return strings.Join(result, " ")
 }
 
+func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, req *http.Request) {
+	params := struct {
+		Email string `json:"email"`
+	}{}
+
+	type output struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	decoder := json.NewDecoder(req.Body)
+
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 400, "error decoding request json")
+		return
+	}
+
+	user, err := cfg.db.CreateUser(context.Background(), params.Email)
+	if err != nil {
+		respondWithError(w, 400, "error creating user in database")
+		return
+	}
+
+	response := output{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+
+	respondWithJSON(w, 201, response)
+}
+
 func handleValidateChirp(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
 		Body string `json:"body"`
@@ -117,16 +170,6 @@ func handleValidateChirp(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		respondWithError(w, 400, "error decoding request json")
 
-		// w.WriteHeader(400)
-		// result := result{
-		// 	Error: 		}
-		// dat, err := json.Marshal(result)
-		// if err != nil {
-		// 	log.Println("error Marshalling error message")
-		// 	return
-		// }
-		//
-		// w.Write(dat)
 		return
 	}
 
@@ -155,6 +198,7 @@ func main() {
 	apiCfg := &apiConfig{
 		fileserverHits: atomic.Int32{},
 		db:             dbQueries,
+		platform:       os.Getenv("PLATFORM"),
 	}
 
 	handler := (http.StripPrefix("/app", http.FileServer(http.Dir("."))))
@@ -170,6 +214,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handleMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handleReset)
 	mux.HandleFunc("POST /api/validate_chirp", handleValidateChirp)
+	mux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 
 	server := &http.Server{
 		Handler: mux,
