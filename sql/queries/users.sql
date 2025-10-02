@@ -7,3 +7,7 @@ RETURNING *;
 
 -- name: ResetUsers :exec
 DELETE FROM users;
+
+-- name: CheckUser :one
+SELECT * FROM users
+WHERE id = $1;

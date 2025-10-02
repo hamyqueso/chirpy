@@ -148,34 +148,51 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, req *http.Request)
 	respondWithJSON(w, 201, response)
 }
 
-func handleValidateChirp(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handleChirp(w http.ResponseWriter, req *http.Request) {
 	type parameters struct {
-		Body string `json:"body"`
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
 
-	type valid struct {
-		//	the key will be the name of struct field unless you give it an explicit JSON tag
-		CleanedBody string `json:"cleaned_body,omitempty"`
+	type Chirp struct {
+		ID        uuid.UUID `json:"id"`
+		Body      string    `json:"body"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		UserID    uuid.UUID `json:"user_id"`
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	result := valid{}
+	var cleanedBody string
 
 	decoder := json.NewDecoder(req.Body)
 	// decoder.DisallowUnknownFields()
 
-	params := parameters{}
-	err := decoder.Decode(&params)
+	inputParams := parameters{}
+	err := decoder.Decode(&inputParams)
 	if err != nil {
 		respondWithError(w, 400, "error decoding request json")
 
 		return
 	}
 
-	if len(params.Body) <= 140 {
-		result.CleanedBody = badWordReplacer(params.Body)
-		respondWithJSON(w, 200, result)
+	if len(inputParams.Body) <= 140 {
+		cleanedBody = badWordReplacer(inputParams.Body)
+		chirpParams := database.CreateChirpParams{
+			Body:   cleanedBody,
+			UserID: inputParams.UserID,
+		}
+		chirp, err := cfg.db.CreateChirp(context.Background(), chirpParams)
+		if err != nil {
+			respondWithError(w, 400, "error creating chirp")
+			return
+		}
+		respondWithJSON(w, 201, Chirp{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		})
 	} else {
 		respondWithError(w, 400, "Chirp is too long")
 		return
@@ -213,7 +230,7 @@ func main() {
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handleMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handleReset)
-	mux.HandleFunc("POST /api/validate_chirp", handleValidateChirp)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handleChirp)
 	mux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 
 	server := &http.Server{
