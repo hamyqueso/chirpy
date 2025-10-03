@@ -25,6 +25,14 @@ type apiConfig struct {
 	platform       string
 }
 
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	cfg.fileserverHits.Add(1)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -154,14 +162,6 @@ func (cfg *apiConfig) handleChirp(w http.ResponseWriter, req *http.Request) {
 		UserID uuid.UUID `json:"user_id"`
 	}
 
-	type Chirp struct {
-		ID        uuid.UUID `json:"id"`
-		Body      string    `json:"body"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		UserID    uuid.UUID `json:"user_id"`
-	}
-
 	var cleanedBody string
 
 	decoder := json.NewDecoder(req.Body)
@@ -199,6 +199,28 @@ func (cfg *apiConfig) handleChirp(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func (cfg *apiConfig) handleGetChirps(w http.ResponseWriter, req *http.Request) {
+	listOfChirps := []Chirp{}
+
+	chirps, err := cfg.db.GetChirps(context.Background())
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error getting chirps from db")
+		return
+	}
+
+	for _, chirp := range chirps {
+		listOfChirps = append(listOfChirps, Chirp{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		})
+	}
+
+	respondWithJSON(w, http.StatusOK, listOfChirps)
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -231,6 +253,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handleMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handleReset)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handleChirp)
+	mux.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
 	mux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 
 	server := &http.Server{
