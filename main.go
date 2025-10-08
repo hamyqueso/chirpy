@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"workspace/chirpy/internal/auth"
 	"workspace/chirpy/internal/database"
 
 	"github.com/google/uuid"
@@ -31,6 +32,13 @@ type Chirp struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	UserID    uuid.UUID `json:"user_id"`
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -119,41 +127,44 @@ func badWordReplacer(s string) string {
 }
 
 func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, req *http.Request) {
-	params := struct {
-		Email string `json:"email"`
+	input := struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}{}
-
-	type output struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-	}
 
 	w.Header().Set("Content-Type", "application/json")
 
 	decoder := json.NewDecoder(req.Body)
 
-	err := decoder.Decode(&params)
+	err := decoder.Decode(&input)
 	if err != nil {
 		respondWithError(w, 400, "error decoding request json")
 		return
 	}
 
-	user, err := cfg.db.CreateUser(context.Background(), params.Email)
+	hash, err := auth.HashPassword(input.Password)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error hashing password")
+	}
+
+	params := database.CreateUserParams{
+		Email:          input.Email,
+		HashedPassword: hash,
+	}
+
+	user, err := cfg.db.CreateUser(context.Background(), params)
 	if err != nil {
 		respondWithError(w, 400, "error creating user in database")
 		return
 	}
 
-	response := output{
+	respondWithJSON(w, 201, User{
 		ID:        user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
-	}
-
-	respondWithJSON(w, 201, response)
+	},
+	)
 }
 
 func (cfg *apiConfig) handleChirp(w http.ResponseWriter, req *http.Request) {
@@ -242,6 +253,51 @@ func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, req *http.Reques
 	})
 }
 
+func (cfg *apiConfig) hangleLogin(w http.ResponseWriter, req *http.Request) {
+	input := struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}{}
+
+	decoder := json.NewDecoder(req.Body)
+
+	err := decoder.Decode(&input)
+	if err != nil {
+		respondWithError(w, 400, "error decoding request json")
+		return
+	}
+
+	user, err := cfg.db.GetUserByEmail(context.Background(), input.Email)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "user email does not exist")
+		return
+	}
+
+	// hash, err := auth.HashPassword(input.Password)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusBadRequest, "password not hashable")
+	// }
+
+	ok, err := auth.CheckPasswordHash(input.Password, user.HashedPassword)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error checking hashed password")
+	}
+
+	if ok {
+		respondWithJSON(w, http.StatusOK, User{
+			user.ID,
+			user.CreatedAt,
+			user.UpdatedAt,
+			user.Email,
+		})
+		return
+	} else {
+		// fmt.Printf("hash pw: %s\nuser hashed pw: %s\n", hash, user.HashedPassword)
+		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+		return
+	}
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -277,6 +333,7 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirp}", apiCfg.handleGetChirpByID)
 	mux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
+	mux.HandleFunc("POST /api/login", apiCfg.hangleLogin)
 
 	server := &http.Server{
 		Handler: mux,
